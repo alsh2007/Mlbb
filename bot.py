@@ -1,17 +1,17 @@
+
 import os
 import json
+import time
 import requests
 from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
 import openai
-from flask import Flask
-import threading
 
 # ======== إعدادات البوت ========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-client = openai.OpenAI(api_key=OPENAI_API_KEY)
+openai.api_key = OPENAI_API_KEY
 
 # ======== ذاكرة المحادثة ========
 memory = {}
@@ -31,23 +31,26 @@ def save_heroes_db(db):
 
 heroes_db = load_heroes_db()
 
+# ======== دالة Retry للاتصالات ========
+def fetch_json(url):
+    for _ in range(3):
+        try:
+            return requests.get(url, timeout=10).json()
+        except Exception as e:
+            print(f"خطأ بالاتصال، يحاول مرة ثانية... {e}")
+            time.sleep(2)
+    return {}
+
 # ======== تحديث الأبطال تلقائي ========
 def update_heroes_db():
-    url = "https://liquipedia.net/mobilelegends/api.php?action=parse&page=List_of_Heroes&format=json"  # مثال API
-    try:
-        res = requests.get(url, timeout=10).json()
-        new_heroes = {}  
-        for hero_name in res.get("heroes", []):
-            new_heroes[hero_name] = {
-                "role": "Unknown",
-                "counters": [],
-                "tips": ""
-            }
-        heroes_db.update(new_heroes)
-        save_heroes_db(heroes_db)
-        print(f"تم تحديث قاعدة الأبطال: {len(new_heroes)} أبطال جدد")
-    except Exception as e:
-        print(f"خطأ بالتحديث: {e}")
+    url = "https://liquipedia.net/mobilelegends/api.php?action=parse&page=List_of_Heroes&format=json"
+    res = fetch_json(url)
+    new_heroes = {}
+    for hero_name in res.get("heroes", []):
+        new_heroes[hero_name] = {"role": "Unknown", "counters": [], "tips": ""}
+    heroes_db.update(new_heroes)
+    save_heroes_db(heroes_db)
+    print(f"تم تحديث قاعدة الأبطال: {len(new_heroes)} أبطال جدد")
 
 # ======== البحث في قاعدة الأبطال ========
 def get_hero_info(hero_name):
@@ -57,11 +60,9 @@ def get_hero_info(hero_name):
 async def analyze_photo(file_path):
     try:
         with open(file_path, "rb") as f:
-            response = client.chat.completions.create(
+            response = openai.chat.completions.create(
                 model="gpt-4o-mini",
-                messages=[
-                    {"role": "user", "content": "حلل هذه الصورة من Mobile Legends وحدد اسم البطل وأفضل الكاونترات والنصائح."}
-                ],
+                messages=[{"role": "user", "content": "حلل هذه الصورة من Mobile Legends وحدد اسم البطل وأفضل الكاونترات والنصائح."}],
                 files=[{"name": "screenshot.png", "file": f}]
             )
         return response.choices[0].message.content
@@ -108,7 +109,7 @@ async def handle_message(update: Update, context: CallbackContext):
     conversation = "\n".join([msg["text"] for msg in memory[user_id]])
     prompt = f"أنت مساعد ذكي للعبة Mobile Legends. اللاعب كتب: {text}\nالسياق السابق: {conversation}\nجاوب باختصار ودقيق:"
     try:
-        response = client.chat.completions.create(
+        response = openai.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}]
         )
@@ -121,22 +122,10 @@ async def start(update: Update, context: CallbackContext):
     await update.message.reply_text("هلو! أنا بوت مساعد Mobile Legends. أسألني عن أي بطل أو أرسل صورة!")
 
 # ======== تشغيل البوت ========
-update_heroes_db()  # تحديث عند التشغيل
+update_heroes_db()
 app = Application.builder().token(BOT_TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
 
 print("البوت شغال مع تحليل الصور والنصوص 😎")
-
-# ======== Web server صغير للـ Railway ========
-web_app = Flask("")
-
-@web_app.route("/")
-def home():
-    return "Bot is alive!"
-
-def run_web():
-    web_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
-
-threading.Thread(target=run_web).start()
 app.run_polling()
