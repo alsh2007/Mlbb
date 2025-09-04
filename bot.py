@@ -5,9 +5,10 @@ from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
 import openai
+import asyncio
 
 # ======== إعدادات البوت ========
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # خلي التوكن بالـEnv بدل ما تكتبه بالكود
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 openai.api_key = OPENAI_API_KEY
 
@@ -29,23 +30,20 @@ def save_heroes_db(db):
 
 heroes_db = load_heroes_db()
 
-# ======== تحديث الأبطال تلقائي ========
+# ======== تحديث الأبطال (تجريبي) ========
 def update_heroes_db():
-    url = "https://liquipedia.net/mobilelegends/api.php?action=parse&page=List_of_Heroes&format=json"  # مثال API
-    try:
-        res = requests.get(url, timeout=10).json()
-        new_heroes = {}  
-        for hero_name in res.get("heroes", []):
-            new_heroes[hero_name] = {
-                "role": "Unknown",
-                "counters": [],
-                "tips": ""
-            }
-        heroes_db.update(new_heroes)
-        save_heroes_db(heroes_db)
-        print(f"تم تحديث قاعدة الأبطال: {len(new_heroes)} أبطال جدد")
-    except Exception as e:
-        print(f"خطأ بالتحديث: {e}")
+    # هنا مثال تجريبي، لأن API Liquipedia يحتاج parsing
+    example_heroes = ["Alucard", "Layla", "Eudora"]
+    new_heroes = {}
+    for hero in example_heroes:
+        new_heroes[hero] = {
+            "role": "Unknown",
+            "counters": [],
+            "tips": ""
+        }
+    heroes_db.update(new_heroes)
+    save_heroes_db(heroes_db)
+    print(f"تم تحديث قاعدة الأبطال: {len(new_heroes)} أبطال جدد")
 
 # ======== البحث في قاعدة الأبطال ========
 def get_hero_info(hero_name):
@@ -54,15 +52,8 @@ def get_hero_info(hero_name):
 # ======== تحليل الصور ========
 async def analyze_photo(file_path):
     try:
-        with open(file_path, "rb") as f:
-            response = openai.ChatCompletion.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "user", "content": "حلل هذه الصورة من Mobile Legends وحدد اسم البطل وأفضل الكاونترات والنصائح."}
-                ],
-                files=[{"name": "screenshot.png", "file": f}]
-            )
-        return response.choices[0].message.content
+        # استخدام نموذج ChatGPT مع النصوص فقط (OpenAI حالياً ما تدعم إرسال ملفات مع ChatCompletion)
+        return "تم استلام الصورة، حالياً لا يمكن التحليل المباشر، يرجى إرسال اسم البطل."
     except Exception as e:
         return f"خطأ بتحليل الصورة: {e}"
 
@@ -70,9 +61,11 @@ async def analyze_photo(file_path):
 async def handle_message(update: Update, context: CallbackContext):
     user_id = update.message.from_user.id
 
-    # جروبات → رد فقط عند المنشن
+    # جروبات → رد فقط عند المنشن (إذا موجود)
     if update.message.chat.type in ["group", "supergroup"]:
-        if not context.bot.id in [ent.user.id for ent in update.message.entities if ent.type == "mention"]:
+        entities = update.message.entities or []
+        mentioned = any(getattr(ent, 'user', None) and ent.user.id == context.bot.id for ent in entities)
+        if not mentioned:
             return
 
     # ذاكرة محادثة ساعة
@@ -124,5 +117,5 @@ app = Application.builder().token(BOT_TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
 
-print("البوت شغال مع تحليل الصور والنصوص 😎")
+print("البوت شغال مع النصوص والصور 😎")
 app.run_polling()
