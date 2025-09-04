@@ -1,17 +1,13 @@
-
 import os
 import json
-import time
 import requests
 from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
-import openai
 
 # ======== إعدادات البوت ========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-openai.api_key = OPENAI_API_KEY
+HF_API_TOKEN = os.getenv("HF_API_TOKEN")  # خد API مجاني من Hugging Face
 
 # ======== ذاكرة المحادثة ========
 memory = {}
@@ -25,76 +21,35 @@ def load_heroes_db():
             return json.load(f)
     return {}
 
-def save_heroes_db(db):
-    with open(DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(db, f, ensure_ascii=False, indent=4)
-
 heroes_db = load_heroes_db()
-
-# ======== دالة Retry للاتصالات ========
-def fetch_json(url):
-    for _ in range(3):
-        try:
-            return requests.get(url, timeout=10).json()
-        except Exception as e:
-            print(f"خطأ بالاتصال، يحاول مرة ثانية... {e}")
-            time.sleep(2)
-    return {}
-
-# ======== تحديث الأبطال تلقائي ========
-def update_heroes_db():
-    url = "https://liquipedia.net/mobilelegends/api.php?action=parse&page=List_of_Heroes&format=json"
-    res = fetch_json(url)
-    new_heroes = {}
-    for hero_name in res.get("heroes", []):
-        new_heroes[hero_name] = {"role": "Unknown", "counters": [], "tips": ""}
-    heroes_db.update(new_heroes)
-    save_heroes_db(heroes_db)
-    print(f"تم تحديث قاعدة الأبطال: {len(new_heroes)} أبطال جدد")
 
 # ======== البحث في قاعدة الأبطال ========
 def get_hero_info(hero_name):
     return heroes_db.get(hero_name.strip().title(), None)
 
-# ======== تحليل الصور ========
-async def analyze_photo(file_path):
+# ======== محادثة ذكية باستخدام Hugging Face ========
+def chat_with_hf(prompt):
+    url = "https://api-inference.huggingface.co/models/gpt2"
+    headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
+    payload = {"inputs": prompt}
     try:
-        with open(file_path, "rb") as f:
-            response = openai.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "user", "content": "حلل هذه الصورة من Mobile Legends وحدد اسم البطل وأفضل الكاونترات والنصائح."}],
-                files=[{"name": "screenshot.png", "file": f}]
-            )
-        return response.choices[0].message.content
+        response = requests.post(url, headers=headers, json=payload, timeout=20)
+        res_json = response.json()
+        if isinstance(res_json, list) and "generated_text" in res_json[0]:
+            return res_json[0]["generated_text"]
+        return "معليش، ما قدرت أفهم سؤالك 😅"
     except Exception as e:
-        return f"خطأ بتحليل الصورة: {e}"
+        return f"صار خطأ بالمحادثة: {e}"
 
 # ======== معالجة الرسائل ========
 async def handle_message(update: Update, context: CallbackContext):
     user_id = update.message.from_user.id
-
-    # جروبات → رد فقط عند المنشن
-    if update.message.chat.type in ["group", "supergroup"]:
-        if not context.bot.id in [ent.user.id for ent in update.message.entities if ent.type == "mention"]:
-            return
 
     # ذاكرة محادثة ساعة
     if user_id not in memory:
         memory[user_id] = []
     memory[user_id] = [msg for msg in memory[user_id] if datetime.now() - msg["time"] < timedelta(hours=1)]
 
-    # ==== إذا الصورة موجودة ====
-    if update.message.photo:
-        file = await update.message.photo[-1].get_file()
-        file_path = f"temp_{user_id}.jpg"
-        await file.download_to_drive(file_path)
-        analysis = await analyze_photo(file_path)
-        await update.message.reply_text(analysis)
-        memory[user_id].append({"text": analysis, "time": datetime.now()})
-        os.remove(file_path)
-        return
-
-    # ==== إذا نص ====
     text = update.message.text or ""
     memory[user_id].append({"text": text, "time": datetime.now()})
 
@@ -108,24 +63,17 @@ async def handle_message(update: Update, context: CallbackContext):
     # أي سؤال عام → الذكاء الاصطناعي
     conversation = "\n".join([msg["text"] for msg in memory[user_id]])
     prompt = f"أنت مساعد ذكي للعبة Mobile Legends. اللاعب كتب: {text}\nالسياق السابق: {conversation}\nجاوب باختصار ودقيق:"
-    try:
-        response = openai.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        await update.message.reply_text(response.choices[0].message.content)
-    except Exception as e:
-        await update.message.reply_text(f"صار خطأ: {e}")
+    reply = chat_with_hf(prompt)
+    await update.message.reply_text(reply)
 
 # ======== بدء البوت ========
 async def start(update: Update, context: CallbackContext):
-    await update.message.reply_text("هلو! أنا بوت مساعد Mobile Legends. أسألني عن أي بطل أو أرسل صورة!")
+    await update.message.reply_text("هلو! أنا بوت مساعد Mobile Legends. أسألني عن أي بطل أو أرسل نص!")
 
 # ======== تشغيل البوت ========
-update_heroes_db()
 app = Application.builder().token(BOT_TOKEN).build()
 app.add_handler(CommandHandler("start", start))
-app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
+app.add_handler(MessageHandler(filters.TEXT, handle_message))
 
-print("البوت شغال مع تحليل الصور والنصوص 😎")
+print("البوت شغال على Hugging Face بدون OpenAI 😎")
 app.run_polling()
